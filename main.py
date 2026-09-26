@@ -101,6 +101,7 @@ class GaussianModel:
 
     @property
     def get_opacity(self):
+        return self._opacity
         return self.opacity_activation(self._opacity)
     
 def getProjectionMatrix(znear, zfar, fovX, fovY):
@@ -162,7 +163,7 @@ def render(viewpoint_camera, pc : GaussianModel, bg_color : torch.Tensor, scalin
         sh_degree=pc.active_sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
-        debug=False
+        debug=True
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)

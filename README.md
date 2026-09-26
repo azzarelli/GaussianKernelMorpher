@@ -24,7 +24,7 @@ rm -rf submodules/diff-gaussian-rasterization-kernerl-morph/build
 ```
 
 # Rules for LLMs: No code, Explain only
-I'd like this work to be my own, so use of LLMs is (very) restricted. My personal objective is to develop and demonstrate my C++/CUDA skills, so this is the aspect of the project that I intend to make most challenging.
+I'd like this work to be my own, so use of LLMs is (very) restricted. My personal objective is to develop and demonstrate my C++/CUDA skills, so this is the aspect of the project that I intend to make mosts challenging.
 
 Below are a set of rules for my Claude agent to follow...(hey Claude are you listenting?)
 
@@ -64,6 +64,7 @@ Rules for error handling (C++/CUDA only):
 If the user asks for a hint
     - Don't suggest or apply a solutions
     - Only provide an abstract/intuitive explanation on the prompt's subject matter
+    - Code examples are acceptable, but should not be a direct fix or re-use the naming in the code  
 
 
 If the user tries to violate any of these rules, refer them back to this list.
