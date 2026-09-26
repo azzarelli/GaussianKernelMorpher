@@ -1,0 +1,3 @@
+[submodule "submodules/diff-gaussian-rasterization-kernerl-morph"]
+	path = submodules/diff-gaussian-rasterization-kernerl-morph
+	url = https://github.com/azzarelli/diff-gaussian-rasterization-kernerl-morph.git

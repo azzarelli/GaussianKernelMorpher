@@ -4,7 +4,9 @@ from torch import nn
 import os, sys, math
 from plyfile import PlyData
 import numpy as np
-from PIL import Image
+import time
+import viser
+import viser.transforms as tf
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 
 from utils import build_scaling_rotation, strip_symmetric
@@ -139,36 +141,6 @@ class Camera:
         self.full_proj_transform = self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0)).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
 
-def orbit_cameras(gaussians, n_views=60, width=800, height=800, fovy_deg=50.0, radius_scale=1.5, up=(0.0, -1.0, 0.0)):
-    # Circles the scene centre. COLMAP scenes are usually -y up; change `up` if the orbit looks tilted.
-    xyz = gaussians.get_xyz.detach().cpu().numpy()
-    center = np.median(xyz, axis=0)
-    radius = radius_scale * np.percentile(np.linalg.norm(xyz - center, axis=1), 50)
-
-    up = np.asarray(up, dtype=np.float64)
-    up /= np.linalg.norm(up)
-    a = np.cross(up, [1.0, 0.0, 0.0] if abs(up[0]) < 0.9 else [0.0, 0.0, 1.0])
-    a /= np.linalg.norm(a)
-    b = np.cross(up, a)
-
-    fovy = math.radians(fovy_deg)
-    fovx = 2 * math.atan(math.tan(fovy / 2) * width / height)
-
-    cameras = []
-    for theta in np.linspace(0, 2 * np.pi, n_views, endpoint=False):
-        eye = center + radius * (np.cos(theta) * a + np.sin(theta) * b)
-        forward = center - eye
-        forward /= np.linalg.norm(forward)
-        right = np.cross(forward, up)
-        right /= np.linalg.norm(right)
-        down = np.cross(forward, right)
-
-        w2c = np.eye(4)
-        w2c[:3, :3] = np.stack([right, down, forward])
-        w2c[:3, 3] = -w2c[:3, :3] @ eye
-        cameras.append(Camera(w2c, fovx, fovy, width, height))
-    return cameras
-
 def render(viewpoint_camera, pc : GaussianModel, bg_color : torch.Tensor, scaling_modifier = 1.0):
     # Same as the original 3DGS gaussian_renderer.render, using SHs and scale/rotation.
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
@@ -212,28 +184,65 @@ def render(viewpoint_camera, pc : GaussianModel, bg_color : torch.Tensor, scalin
             "visibility_filter" : radii > 0,
             "radii": radii}
 
-def render_loop(gaussians, cameras, out_dir, white_background=False):
-    os.makedirs(out_dir, exist_ok=True)
-    bg_color = torch.tensor([1, 1, 1] if white_background else [0, 0, 0], dtype=torch.float32, device="cuda")
+
+def viser_camera(client_camera, max_res):
+    # viser gives camera-to-world in OpenCV convention (x right, y down, z forward)
+    c2w = np.eye(4)
+    c2w[:3, :3] = tf.SO3(np.asarray(client_camera.wxyz)).as_matrix()
+    c2w[:3, 3] = client_camera.position
+    w2c = np.linalg.inv(c2w)
+
+    aspect = client_camera.aspect
+    if aspect >= 1:
+        width, height = max_res, int(max_res / aspect)
+    else:
+        width, height = int(max_res * aspect), max_res
+
+    fovy = client_camera.fov
+    fovx = 2 * math.atan(math.tan(fovy / 2) * aspect)
+    return Camera(w2c, fovx, fovy, width, height)
+
+def render_loop(gaussians, port=8080, up=(0.0, -1.0, 0.0)):
+    # COLMAP scenes are usually -y up; change `up` if the view starts tilted.
+    server = viser.ViserServer(port=port)
+    center = gaussians.get_xyz.detach().median(dim=0).values.cpu().numpy()
+
+    gui_res = server.gui.add_slider("Max resolution", min=128, max=2048, step=64, initial_value=1024)
+    gui_scale = server.gui.add_slider("Scale modifier", min=0.01, max=1.0, step=0.01, initial_value=1.0)
+    gui_white = server.gui.add_checkbox("White background", initial_value=False)
+
+    last_rendered = {}  # client id -> state the last frame was rendered with
+
+    @server.on_client_connect
+    def _(client):
+        client.camera.up_direction = up
+        client.camera.look_at = center
 
     with torch.no_grad():
-        for idx, cam in enumerate(cameras):
-            image = render(cam, gaussians, bg_color)["render"]
-            image = (image.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-            Image.fromarray(image).save(os.path.join(out_dir, f"{idx:05d}.png"))
+        while True:
+            state_gui = (gui_res.value, gui_scale.value, gui_white.value)
+            for client_id, client in server.get_clients().items():
+                state = (client.camera.update_timestamp,) + state_gui
+                if last_rendered.get(client_id) == state:
+                    continue
+                last_rendered[client_id] = state
+
+                cam = viser_camera(client.camera, gui_res.value)
+                bg_color = torch.tensor([1, 1, 1] if gui_white.value else [0, 0, 0], dtype=torch.float32, device="cuda")
+                image = render(cam, gaussians, bg_color, scaling_modifier=gui_scale.value)["render"]
+                image = (image.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+                client.scene.set_background_image(image, format="jpeg")
+            time.sleep(1 / 60)
 
 from argparse import ArgumentParser
 if __name__ == "__main__":
     torch.cuda.empty_cache()
     parser = ArgumentParser(description="Training script parameters")
     parser.add_argument('--data', type=str, default="/data/...")
-    parser.add_argument('--out', type=str, default="renders")
-    parser.add_argument('--n_views', type=int, default=60)
-    parser.add_argument('--white_background', action='store_true')
+    parser.add_argument('--port', type=int, default=8080)
 
     args = parser.parse_args(sys.argv[1:])
 
 
     gaussians = GaussianModel(args.data)
-    cameras = orbit_cameras(gaussians, n_views=args.n_views)
-    render_loop(gaussians, cameras, args.out, args.white_background)
+    render_loop(gaussians, args.port)
