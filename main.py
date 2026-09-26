@@ -27,7 +27,6 @@ class GaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
-
     def __init__(self, path):
         self.active_sh_degree = 3
         self.setup_functions()
@@ -82,7 +81,6 @@ class GaussianModel:
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
         
-
     @property
     def get_scaling(self):
         return self.scaling_activation(self._scaling)
@@ -141,7 +139,7 @@ class Camera:
         self.full_proj_transform = self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0)).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
 
-def render(viewpoint_camera, pc : GaussianModel, bg_color : torch.Tensor, scaling_modifier = 1.0):
+def render(viewpoint_camera, pc : GaussianModel, bg_color : torch.Tensor, scaling_modifier = 1.0, temporal_ctl = 0.):
     # Same as the original 3DGS gaussian_renderer.render, using SHs and scale/rotation.
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
     try:
@@ -168,7 +166,7 @@ def render(viewpoint_camera, pc : GaussianModel, bg_color : torch.Tensor, scalin
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
-
+        
     rendered_image, radii = rasterizer(
         means3D = pc.get_xyz,
         means2D = screenspace_points,
@@ -177,6 +175,7 @@ def render(viewpoint_camera, pc : GaussianModel, bg_color : torch.Tensor, scalin
         opacities = pc.get_opacity,
         scales = pc.get_scaling,
         rotations = pc.get_rotation,
+        time=temporal_ctl,
         cov3D_precomp = None)
 
     return {"render": rendered_image,
@@ -202,7 +201,7 @@ def viser_camera(client_camera, max_res):
     fovx = 2 * math.atan(math.tan(fovy / 2) * aspect)
     return Camera(w2c, fovx, fovy, width, height)
 
-def render_loop(gaussians, port=8080, up=(0.0, -1.0, 0.0)):
+def render_loop(gaussians, port=8080, up=(0.0, 1.0, 1.0)):
     # COLMAP scenes are usually -y up; change `up` if the view starts tilted.
     server = viser.ViserServer(port=port)
     center = gaussians.get_xyz.detach().median(dim=0).values.cpu().numpy()
@@ -210,6 +209,7 @@ def render_loop(gaussians, port=8080, up=(0.0, -1.0, 0.0)):
     gui_res = server.gui.add_slider("Max resolution", min=128, max=2048, step=64, initial_value=1024)
     gui_scale = server.gui.add_slider("Scale modifier", min=0.01, max=1.0, step=0.01, initial_value=1.0)
     gui_white = server.gui.add_checkbox("White background", initial_value=False)
+    gui_temporal = server.gui.add_slider("Temporal control", min=0.0, max=1.0, step=0.01, initial_value=0.0)
 
     last_rendered = {}  # client id -> state the last frame was rendered with
 
@@ -220,7 +220,7 @@ def render_loop(gaussians, port=8080, up=(0.0, -1.0, 0.0)):
 
     with torch.no_grad():
         while True:
-            state_gui = (gui_res.value, gui_scale.value, gui_white.value)
+            state_gui = (gui_res.value, gui_scale.value, gui_white.value, gui_temporal.value)
             for client_id, client in server.get_clients().items():
                 state = (client.camera.update_timestamp,) + state_gui
                 if last_rendered.get(client_id) == state:
@@ -229,7 +229,7 @@ def render_loop(gaussians, port=8080, up=(0.0, -1.0, 0.0)):
 
                 cam = viser_camera(client.camera, gui_res.value)
                 bg_color = torch.tensor([1, 1, 1] if gui_white.value else [0, 0, 0], dtype=torch.float32, device="cuda")
-                image = render(cam, gaussians, bg_color, scaling_modifier=gui_scale.value)["render"]
+                image = render(cam, gaussians, bg_color, scaling_modifier=gui_scale.value, temporal_ctl=gui_temporal.value)["render"]
                 image = (image.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
                 client.scene.set_background_image(image, format="jpeg")
             time.sleep(1 / 60)
