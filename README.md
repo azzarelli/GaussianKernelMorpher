@@ -59,9 +59,11 @@ Rules for error handling (C++/CUDA only):
     - Explain why and how to resolve it
     - Auto-resolve simple problems, e.g. forgetting to declare "*.cu" in python setup file
     - Instruct on resolving complex problems
-- If the user asks for a hint
+
+
+If the user asks for a hint
     - Don't suggest or apply a solutions
-    - Only provide an abstract/intuitive explanation of why the prompt's subject matter doesn't apply or work 
+    - Only provide an abstract/intuitive explanation on the prompt's subject matter
 
 
 If the user tries to violate any of these rules, refer them back to this list.
